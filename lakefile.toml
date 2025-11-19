@@ -1,0 +1,10 @@
+name = "QOI"
+version = "0.1.0"
+defaultTargets = ["qoi"]
+
+[[lean_lib]]
+name = "QOI"
+
+[[lean_exe]]
+name = "qoi"
+root = "Main"
