@@ -1,6 +1,9 @@
 -- QOI (Quite OK Image) Format Implementation
 -- Specification: https://qoiformat.org/
 
+-- TODO: Refactor encoder/decoder to use same state
+-- TODO: Run-length should not be in encoder state
+-- TODO: Add intermediary step for compressed image representation (list of chunks, not bytes)
 namespace QOI.Basic
 
 structure RGBA where
