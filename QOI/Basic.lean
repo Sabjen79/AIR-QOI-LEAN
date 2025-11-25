@@ -1,8 +1,6 @@
 -- QOI (Quite OK Image) Format Implementation
 -- Specification: https://qoiformat.org/
 
--- TODO: Refactor encoder/decoder to use same state
--- TODO: Run-length should not be in encoder state
 -- TODO: Add intermediary step for compressed image representation (list of chunks, not bytes)
 namespace QOI.Basic
 
@@ -203,39 +201,39 @@ def decodeHeader (bytes : List UInt8) : Option (QOIHeader × List UInt8) := do
 
   some ({ width, height, channels, colorspace }, bytes.drop 14)
 
-/-! ## Encoder State and Functions -/
+/-! ## Unified State for Encoding/Decoding -/
 
-structure EncoderState where
+-- Unified state used by both encoder and decoder
+structure QOIState where
   prevPixel : RGBA
-  runLength : Nat
   index : Array RGBA  -- 64 elements for color palette
-  output : List UInt8
+  deriving Inhabited
 
-def initEncoderState : EncoderState :=
+def initQOIState : QOIState :=
   { prevPixel := { r := 0, g := 0, b := 0, a := 255 }
-  , runLength := 0
   , index := Array.replicate 64 { r := 0, g := 0, b := 0, a := 0 }
-  , output := []
   }
+
+/-! ## Encoder Functions -/
 
 def MAX_RUN_LENGTH : Nat := 62
 
--- Helper: Emit a chunk to output
-def emitChunk (state : EncoderState) (chunk : QOIChunk) (px : RGBA) : EncoderState :=
+-- Helper: Emit a chunk and update state, returns (newState, encodedBytes)
+def emitChunk (state : QOIState) (chunk : QOIChunk) (px : RGBA) : QOIState × List UInt8 :=
   let hashIdx := hashColor px
-  { state with
+  let newState := { state with
     prevPixel := px
-    output := state.output ++ encodeChunk chunk
     index := state.index.set! hashIdx.toNat px
   }
+  (newState, encodeChunk chunk)
 
--- Helper: Flush accumulated run if any
-def flushRun (state : EncoderState) : EncoderState :=
-  if state.runLength > 0 then
-    let chunk := QOIChunk.run { runLength := state.runLength }
-    { state with runLength := 0, output := state.output ++ encodeChunk chunk }
+-- Helper: Encode run-length chunk
+def encodeRun (runLength : Nat) : List UInt8 :=
+  if runLength > 0 then
+    let chunk := QOIChunk.run { runLength := runLength }
+    encodeChunk chunk
   else
-    state
+    []
 
 -- Helper: Check if differences fit in DIFF chunk range
 def inDiffRange (dr dg db : Int8) : Bool :=
@@ -265,32 +263,44 @@ def chooseChunk (px : RGBA) (prev : RGBA) : QOIChunk :=
     -- Large differences - use RGB
     QOIChunk.rgb { r := px.r, g := px.g, b := px.b }
 
--- Encode a single pixel
-def encodePixel (state : EncoderState) (px : RGBA) : EncoderState :=
+-- Encode a single pixel (returns state, output bytes, and run-length)
+def encodePixel (state : QOIState) (px : RGBA) (runLength : Nat) : QOIState × List UInt8 × Nat :=
   if px == state.prevPixel then
     -- Same pixel - extend run
-    let newRunLength := state.runLength + 1
+    let newRunLength := runLength + 1
     if newRunLength == MAX_RUN_LENGTH then
-      flushRun { state with runLength := newRunLength, prevPixel := px }
+      -- Flush the run at max length
+      let runBytes := encodeRun newRunLength
+      let updatedState := { state with prevPixel := px }
+      (updatedState, runBytes, 0)
     else
-      { state with runLength := newRunLength, prevPixel := px }
+      -- Continue accumulating run
+      (state, [], newRunLength)
   else
     -- Different pixel - flush run and encode
-    let state := flushRun state
+    let runBytes := encodeRun runLength
     let hashIdx := hashColor px
 
     if state.index[hashIdx.toNat]! == px then
       -- Pixel found in index
-      emitChunk state (QOIChunk.index { index := hashIdx }) px
+      let (newState, chunkBytes) := emitChunk state (QOIChunk.index { index := hashIdx }) px
+      (newState, runBytes ++ chunkBytes, 0)
     else
       -- Choose best encoding method
-      emitChunk state (chooseChunk px state.prevPixel) px
+      let (newState, chunkBytes) := emitChunk state (chooseChunk px state.prevPixel) px
+      (newState, runBytes ++ chunkBytes, 0)
+
+-- Helper for folding over pixels with run-length tracking
+def encodePixelWithState (acc : QOIState × List UInt8 × Nat) (px : RGBA) : QOIState × List UInt8 × Nat :=
+  let (state, output, runLength) := acc
+  let (newState, newBytes, newRunLength) := encodePixel state px runLength
+  (newState, output ++ newBytes, newRunLength)
 
 -- Encode pixel data
 def encodePixels (pixels : List RGBA) : List UInt8 :=
-  let state := pixels.foldl encodePixel initEncoderState
-  let state := flushRun state
-  state.output ++ QOI_END_MARKER
+  let (_, output, runLength) := pixels.foldl encodePixelWithState (initQOIState, [], 0)
+  let finalRunBytes := encodeRun runLength
+  output ++ finalRunBytes ++ QOI_END_MARKER
 
 /-! ## Main Encode Function -/
 
@@ -304,65 +314,47 @@ def encode (width : UInt32) (height : UInt32) (channels : UInt8) (pixels : List 
   let header : QOIHeader := { width, height, channels, colorspace := 0 }
   some (encodeHeader header ++ encodePixels pixels)
 
-/-! ## Decoder State and Functions -/
-
--- Decoder state
-structure DecoderState where
-  prevPixel : RGBA
-  index : Array RGBA  -- 64 elements for color palette
-  pixels : List RGBA
-  pos : Nat
-
--- Initial decoder state with QOI defaults
-def initDecoderState : DecoderState :=
-  { prevPixel := { r := 0, g := 0, b := 0, a := 255 }
-  , index := Array.replicate 64 { r := 0, g := 0, b := 0, a := 0 }
-  , pixels := []
-  , pos := 0
-  }
+/-! ## Decoder Functions -/
 
 -- Helper: Replicate a pixel n times
 def replicatePixel (px : RGBA) : Nat → List RGBA → List RGBA
   | 0, acc => acc
   | n + 1, acc => replicatePixel px n (px :: acc)
 
--- Helper: Process a decoded chunk and update state
-def processChunk (state : DecoderState) (chunk : QOIChunk) (bytesConsumed : Nat) : DecoderState :=
+-- Helper: Process a decoded chunk and update state, returns (newState, newPixels)
+def processChunk (state : QOIState) (chunk : QOIChunk) : QOIState × List RGBA :=
   match chunk with
   | .run runChunk =>
     -- Run-length encoding: repeat previous pixel
-    { state with
-      pixels := replicatePixel state.prevPixel runChunk.runLength state.pixels
-      pos := state.pos + bytesConsumed
-    }
+    (state, replicatePixel state.prevPixel runChunk.runLength [])
   | _ =>
     -- Compute new pixel from chunk
     let px := applyChunk chunk state.prevPixel state.index
     let hashIdx := hashColor px
-    { state with
+    let newState := { state with
       prevPixel := px
       index := state.index.set! hashIdx.toNat px
-      pixels := px :: state.pixels
-      pos := state.pos + bytesConsumed
     }
+    (newState, [px])
 
 -- Decode all pixels from byte stream
-partial def decodePixelsAux (bytes : List UInt8) (state : DecoderState) (totalPixels : Nat) : Option (List RGBA) :=
-  if state.pixels.length >= totalPixels then
-    some state.pixels.reverse
-  else if state.pos >= bytes.length then
+partial def decodePixelsAux (bytes : List UInt8) (state : QOIState) (pixels : List RGBA) (pos : Nat) (totalPixels : Nat) : Option (List RGBA) :=
+  if pixels.length >= totalPixels then
+    some pixels.reverse
+  else if pos >= bytes.length then
     none
   else
-    match decodeChunk bytes state.pos with
+    match decodeChunk bytes pos with
     | none => none
     | some (chunk, bytesConsumed) =>
-      decodePixelsAux bytes (processChunk state chunk bytesConsumed) totalPixels
+      let (newState, newPixels) := processChunk state chunk
+      decodePixelsAux bytes newState (newPixels.reverse ++ pixels) (pos + bytesConsumed) totalPixels
 
 -- Main decode function
 def decode (bytes : List UInt8) : Option (QOIHeader × List RGBA) := do
   let (header, dataBytes) ← decodeHeader bytes
   let totalPixels := header.width.toNat * header.height.toNat
-  let pixels ← decodePixelsAux dataBytes initDecoderState totalPixels
+  let pixels ← decodePixelsAux dataBytes initQOIState [] 0 totalPixels
   some (header, pixels)
 
 -- Read a QOI file from disk
