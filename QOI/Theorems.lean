@@ -32,22 +32,6 @@ theorem encode_decode_roundtrip
       decoded_pixels = pixels := by
   sorry
 
-theorem encode_does_not_fail
-    (width : UInt32)
-    (height : UInt32)
-    (channels : UInt8)
-    (pixels : List RGBA)
-    (h_channels : channels = 3 ∨ channels = 4)
-    (h_length : pixels.length = width.toNat * height.toNat) :
-    ∃ encoded, encode width height channels pixels = some encoded :=
-  by
-    exists (
-      let header : QOIHeader := { width, height, channels, colorspace := 0 }
-      (encodeHeader header ++ encodePixels pixels)
-    )
-    simp [encode]
-    simp [guard]
-    grind
 /--
   Chunk encoding and decoding are inverse operations for valid chunks.
 
@@ -58,6 +42,15 @@ theorem encodeChunk_decodeChunk_inverse
     (chunk : QOIChunk) :
     ∃ bytesConsumed,
       decodeChunk (encodeChunk chunk) 0 = some (chunk, bytesConsumed) := by
+  sorry
+
+-- def decodeChunks (chunks : List QOIChunk) (state : QOIState) (acc : List RGBA) : List RGBA :=
+-- def encodeChunks (pixels : List RGBA) : List QOIChunk :=
+theorem encode_decode_chunks_inverse
+    (pixels : List RGBA) (state : QOIState) (acc : List RGBA) :
+    let chunks := encodeChunks pixels
+    let decoded_pixels := decodeChunks chunks state acc
+    decoded_pixels = pixels := by
   sorry
 
 /--

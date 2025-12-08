@@ -4,6 +4,10 @@ set_option linter.unusedVariables false
 
 namespace QOI.Basic
 
+-- TODO: Extract folder function from encodeChunks as a separate function.
+-- TODO: Replace foldl with recursive call in encodeChunks.
+-- TODO: Decode is inverse of encode theorem
+
 structure RGBA where
   r : UInt8
   g : UInt8
@@ -261,7 +265,7 @@ def chooseChunk (px : RGBA) (prev : RGBA) : QOIChunk :=
     QOIChunk.rgb { r := px.r, g := px.g, b := px.b }
 
 /-- Encode a list of pixels into an intermediate list of QOIChunk. -/
-partial def encodeChunks (pixels : List RGBA) : List QOIChunk :=
+def encodeChunks (pixels : List RGBA) : List QOIChunk :=
   let folder := fun (acc : QOIState × List QOIChunk × Nat) (px : RGBA) =>
     let (state, chunks, runLength) := acc
     if px == state.prevPixel then
@@ -321,27 +325,27 @@ partial def decodeBytesToChunks (bytes : List UInt8) (pos : Nat) (acc : List QOI
       | some (chunk, consumed) => decodeBytesToChunks bytes (pos + consumed) (chunk :: acc)
 
 /-- Convert a list of chunks into pixels by processing them and updating state. -/
-partial def chunksToPixelsAux (chunks : List QOIChunk) (state : QOIState) (acc : List RGBA) : Option (List RGBA) :=
+def decodeChunks (chunks : List QOIChunk) (state : QOIState) (acc : List RGBA) : List RGBA :=
   match chunks with
-  | [] => some acc.reverse
+  | [] => acc.reverse
   | c :: cs =>
     match c with
     | .run rc =>
       -- replicate previous pixel rc.runLength times
       let repeated := List.replicate rc.runLength state.prevPixel
-      chunksToPixelsAux cs { state with } (repeated.reverse ++ acc)
+      decodeChunks cs { state with } (repeated.reverse ++ acc)
     | _ =>
       let px := applyChunk c state.prevPixel state.index
       let hashIdx := hashColor px
       let newState := { prevPixel := px, index := state.index.set! hashIdx.toNat px }
-      chunksToPixelsAux cs newState (px :: acc)
+      decodeChunks cs newState (px :: acc)
 
 -- Public function: decode bytes (entire file) to header and pixels, using intermediate chunks.
 def decode (bytes : List UInt8) : Option (QOIHeader × List RGBA) := do
   let (header, rest) ← decodeHeader bytes
   -- decode rest into chunks
   let (chunks, _pos) ← decodeBytesToChunks rest 0 []
-  let pixels ← chunksToPixelsAux chunks initQOIState []
+  let pixels ← decodeChunks chunks initQOIState []
   -- Validate pixel count
   let total := header.width.toNat * header.height.toNat
   guard (pixels.length == total)
