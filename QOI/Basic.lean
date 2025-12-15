@@ -4,9 +4,7 @@ set_option linter.unusedVariables false
 
 namespace QOI.Basic
 
--- TODO: Extract folder function from encodeChunks as a separate function.
 -- TODO: Replace foldl with recursive call in encodeChunks.
--- TODO: Decode is inverse of encode theorem
 
 structure RGBA where
   r : UInt8
@@ -264,31 +262,35 @@ def chooseChunk (px : RGBA) (prev : RGBA) : QOIChunk :=
     -- Large differences - use RGB
     QOIChunk.rgb { r := px.r, g := px.g, b := px.b }
 
+/-- Folder function for encoding pixels into chunks.
+    Takes the accumulator (state, chunks, runLength) and a pixel,
+    and returns the updated accumulator. -/
+def encodePixelFolder (acc : QOIState × List QOIChunk × Nat) (px : RGBA) : QOIState × List QOIChunk × Nat :=
+  let (state, chunks, runLength) := acc
+  if px == state.prevPixel then
+    let newRun := runLength + 1
+    if newRun == MAX_RUN_LENGTH then
+      -- flush run as chunk
+      let newChunks := chunks ++ [makeRunChunk newRun]
+      ({ state with prevPixel := px }, newChunks, 0)
+    else
+      (state, chunks, newRun)
+  else
+    -- pixel differs: flush previous run (if any), then either INDEX or chosen chunk
+    let flushed := if runLength > 0 then chunks ++ [makeRunChunk runLength] else chunks
+    let hashIdx := hashColor px
+    if state.index[hashIdx.toNat]! == px then
+      let idxChunk := QOIChunk.index { index := hashIdx }
+      let newState := emitChunkState state idxChunk px
+      (newState, flushed ++ [idxChunk], 0)
+    else
+      let chosen := chooseChunk px state.prevPixel
+      let newState := emitChunkState state chosen px
+      (newState, flushed ++ [chosen], 0)
+
 /-- Encode a list of pixels into an intermediate list of QOIChunk. -/
 def encodeChunks (pixels : List RGBA) : List QOIChunk :=
-  let folder := fun (acc : QOIState × List QOIChunk × Nat) (px : RGBA) =>
-    let (state, chunks, runLength) := acc
-    if px == state.prevPixel then
-      let newRun := runLength + 1
-      if newRun == MAX_RUN_LENGTH then
-        -- flush run as chunk
-        let newChunks := chunks ++ [makeRunChunk newRun]
-        ({ state with prevPixel := px }, newChunks, 0)
-      else
-        (state, chunks, newRun)
-    else
-      -- pixel differs: flush previous run (if any), then either INDEX or chosen chunk
-      let flushed := if runLength > 0 then chunks ++ [makeRunChunk runLength] else chunks
-      let hashIdx := hashColor px
-      if state.index[hashIdx.toNat]! == px then
-        let idxChunk := QOIChunk.index { index := hashIdx }
-        let newState := emitChunkState state idxChunk px
-        (newState, flushed ++ [idxChunk], 0)
-      else
-        let chosen := chooseChunk px state.prevPixel
-        let newState := emitChunkState state chosen px
-        (newState, flushed ++ [chosen], 0)
-  let (_, chunks, runLength) := pixels.foldl folder (initQOIState, [], 0)
+  let (_, chunks, runLength) := pixels.foldl encodePixelFolder (initQOIState, [], 0)
   -- flush final run if any
   if runLength > 0 then chunks ++ [makeRunChunk runLength] else chunks
 
