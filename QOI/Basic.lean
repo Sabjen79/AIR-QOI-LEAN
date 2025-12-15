@@ -4,8 +4,6 @@ set_option linter.unusedVariables false
 
 namespace QOI.Basic
 
--- TODO: Replace foldl with recursive call in encodeChunks.
-
 structure RGBA where
   r : UInt8
   g : UInt8
@@ -289,10 +287,50 @@ def encodePixelFolder (acc : QOIState × List QOIChunk × Nat) (px : RGBA) : QOI
       (newState, flushed ++ [chosen], 0)
 
 /-- Encode a list of pixels into an intermediate list of QOIChunk. -/
+def encodeChunksAux
+  (pixels : List RGBA)
+  (state : QOIState)
+  (chunks : List QOIChunk)
+  (runLength : Nat)
+  : List QOIChunk :=
+match pixels with
+| [] =>
+    -- la final, flush la run dacă există
+    if runLength > 0 then
+      chunks ++ [makeRunChunk runLength]
+    else
+      chunks
+
+| px :: rest =>
+    if px == state.prevPixel then
+      let newRun := runLength + 1
+      if newRun == MAX_RUN_LENGTH then
+        -- flush run și continuă
+        let newChunks := chunks ++ [makeRunChunk newRun]
+        encodeChunksAux rest
+          { state with prevPixel := px }
+          newChunks
+          0
+      else
+        encodeChunksAux rest state chunks newRun
+    else
+      -- pixel diferit: flush run anterior
+      let flushed :=
+        if runLength > 0 then chunks ++ [makeRunChunk runLength] else chunks
+
+      let hashIdx := hashColor px
+      if state.index[hashIdx.toNat]! == px then
+        let idxChunk := QOIChunk.index { index := hashIdx }
+        let newState := emitChunkState state idxChunk px
+        encodeChunksAux rest newState (flushed ++ [idxChunk]) 0
+      else
+        let chosen := chooseChunk px state.prevPixel
+        let newState := emitChunkState state chosen px
+        encodeChunksAux rest newState (flushed ++ [chosen]) 0
+
+
 def encodeChunks (pixels : List RGBA) : List QOIChunk :=
-  let (_, chunks, runLength) := pixels.foldl encodePixelFolder (initQOIState, [], 0)
-  -- flush final run if any
-  if runLength > 0 then chunks ++ [makeRunChunk runLength] else chunks
+  encodeChunksAux pixels initQOIState [] 0
 
 /-- Convert intermediate chunks to bytes (flatten). -/
 def chunksToBytes (chunks : List QOIChunk) : List UInt8 :=
