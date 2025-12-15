@@ -4,6 +4,8 @@ set_option linter.unusedVariables false
 
 namespace QOI.Basic
 
+-- TODO: Implement predicate to valid chunks for number ranges
+
 structure RGBA where
   r : UInt8
   g : UInt8
@@ -42,6 +44,9 @@ structure QOIChunkIndex where
   index : UInt8  -- 6-bit value (0-63)
   deriving Repr, BEq
 
+def ValidChunkIndex (c : QOIChunkIndex) : Prop :=
+  c.index < 64  -- Ensure index is within 6-bit range
+
 def QOI_OP_DIFF  : UInt8 := 0x40  -- 01xxxxxx
 structure QOIChunkDiff where
   dr : Int8  -- -2 to 1
@@ -70,6 +75,14 @@ inductive QOIChunk where
   | luma : QOIChunkLuma → QOIChunk
   | run : QOIChunkRun → QOIChunk
   deriving Repr
+
+def ValidQOIChunk (chunk : QOIChunk) : Prop :=
+  match chunk with
+  | .index c => ValidChunkIndex c
+  | .diff c => c.dr >= -2 ∧ c.dr <= 1 ∧ c.dg >= -2 ∧ c.dg <= 1 ∧ c.db >= -2 ∧ c.db <= 1
+  | .luma c => c.dg >= -32 ∧ c.dg <= 31 ∧ (c.dr_dg >= -8 ∧ c.dr_dg <= 7) ∧ (c.db_dg >= -8 ∧ c.db_dg <= 7)
+  | .run c => c.runLength >= 1 ∧ c.runLength <= 62
+  | _ => True  -- RGB and RGBA have no additional constraints
 
 -- Encode a single chunk into its byte representation.
 def encodeChunk (chunk : QOIChunk) : List UInt8 :=

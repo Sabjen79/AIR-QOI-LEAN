@@ -51,6 +51,83 @@ theorem encode_decode_roundtrip
   -- 3. All the header fields match
   sorry
 
+theorem QOI_OP_INDEX_not_conflict_RGB
+    (c : UInt8)
+    (h : c < 64) :
+    QOI_OP_INDEX ||| c ≠ QOI_OP_RGB := by
+  unfold QOI_OP_INDEX QOI_OP_RGB
+  simp only [UInt8.lt_iff_toNat_lt, UInt8.toNat_ofNat] at h
+  intro heq
+  have h1 : (0 ||| c) = c := by simp
+  rw [h1] at heq
+  have h2 : c.toNat = (0xfe : UInt8).toNat := by simp [heq]
+  simp only [UInt8.toNat_ofNat] at h2
+  omega
+
+theorem QOI_OP_INDEX_not_conflict_RGBA
+    (c : UInt8)
+    (h : c < 64) :
+    QOI_OP_INDEX ||| c ≠ QOI_OP_RGBA := by
+  unfold QOI_OP_INDEX QOI_OP_RGBA
+  simp only [UInt8.lt_iff_toNat_lt, UInt8.toNat_ofNat] at h
+  intro heq
+  have h1 : (0 ||| c) = c := by simp
+  rw [h1] at heq
+  have h2 : c.toNat = (0xff : UInt8).toNat := by simp [heq]
+  simp only [UInt8.toNat_ofNat] at h2
+  omega
+
+theorem QOI_OP_INDEX_right
+    (c : UInt8)
+    (h : c < 64) :
+    (QOI_OP_INDEX ||| c) &&& 192 = QOI_OP_INDEX := by
+  unfold QOI_OP_INDEX
+  simp only [UInt8.lt_iff_toNat_lt, UInt8.toNat_ofNat] at h
+  have h1 : (0 ||| c) = c := by simp
+  rw [h1]
+  have : c.toBitVec &&& 192#8 = 0#8 := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_and, BitVec.toNat_ofNat, UInt8.toNat_toBitVec]
+    have h256 : 192 % 256 = 192 := by native_decide
+    simp only [h256]
+    have hbound : c.toNat ≤ 63 := Nat.lt_succ_iff.mp h
+    have : ∀ n, n ≤ 63 → n &&& 192 = 0 := by decide
+    exact this c.toNat hbound
+  simp only [← UInt8.toBitVec_and, ← UInt8.toBitVec_ofNat] at this
+  exact UInt8.eq_of_toBitVec_eq this
+
+theorem QOI_OP_INDEX_left
+    (c : QOIChunkIndex)
+    (h : c.index < 64) :
+    { index := (QOI_OP_INDEX ||| c.index) &&& 63 } = c := by
+  unfold QOI_OP_INDEX
+  simp only [UInt8.lt_iff_toNat_lt, UInt8.toNat_ofNat] at h
+  have h1 : (0 ||| c.index) = c.index := by simp
+  simp only [h1]
+  have : c.index.toBitVec &&& 63#8 = c.index.toBitVec := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_and, BitVec.toNat_ofNat, UInt8.toNat_toBitVec]
+    have h256 : 63 % 256 = 63 := by native_decide
+    simp only [h256]
+    have hbound : c.index.toNat ≤ 63 := Nat.lt_succ_iff.mp h
+    have : ∀ n, n ≤ 63 → n &&& 63 = n := by decide
+    exact this c.index.toNat hbound
+  simp only [← UInt8.toBitVec_and, ← UInt8.toBitVec_ofNat] at this
+  have heq : c.index &&& 63 = c.index := UInt8.eq_of_toBitVec_eq this
+  simp only [heq]
+
+-- Helper lemma: for n ≤ 63, n &&& 63 = n
+theorem UInt8_and_63_eq_self (c : UInt8) (h : c < 64) : c &&& 63 = c := by
+  have : c.toBitVec &&& 63#8 = c.toBitVec := by
+    apply BitVec.eq_of_toNat_eq
+    simp only [BitVec.toNat_and, BitVec.toNat_ofNat, UInt8.toNat_toBitVec]
+    simp only [UInt8.lt_iff_toNat_lt, UInt8.toNat_ofNat] at h
+    have hbound : c.toNat ≤ 63 := Nat.lt_succ_iff.mp h
+    have : ∀ n, n ≤ 63 → n &&& 63 = n := by decide
+    exact this c.toNat hbound
+  simp only [← UInt8.toBitVec_and, ← UInt8.toBitVec_ofNat] at this
+  exact UInt8.eq_of_toBitVec_eq this
+
 /--
   Chunk encoding and decoding are inverse operations for valid chunks.
 
@@ -59,15 +136,26 @@ theorem encode_decode_roundtrip
 -/
 theorem encodeChunk_decodeChunk_inverse
     (chunk : QOIChunk) :
+    (ValidQOIChunk chunk) →
     ∃ bytesConsumed,
       decodeChunk (encodeChunk chunk) 0 = some (chunk, bytesConsumed) := by
+  intro h_valid
   cases chunk with
-  | rgb c => exists 4
-  | rgba c => exists 5
-  | index c => exists 1; sorry
-  | diff c => exists 1; sorry
-  | luma c => exists 2; sorry
-  | run c => exists 1; sorry
+  | rgb c => exact ⟨4, rfl⟩
+  | rgba c => exact ⟨5, rfl⟩
+  | index c =>
+    refine ⟨1, ?_⟩
+    unfold ValidQOIChunk ValidChunkIndex at h_valid
+    simp at h_valid
+    unfold encodeChunk decodeChunk
+    simp [UInt8_and_63_eq_self c.index h_valid,
+          QOI_OP_INDEX_not_conflict_RGB c.index h_valid,
+          QOI_OP_INDEX_not_conflict_RGBA c.index h_valid,
+          QOI_OP_INDEX_right c.index h_valid,
+          QOI_OP_INDEX_left c h_valid]
+  | diff c => exact ⟨1, sorry⟩
+  | luma c => exact ⟨2, sorry⟩
+  | run c => exact ⟨1, sorry⟩
 
 -- def decodeChunks (chunks : List QOIChunk) (state : QOIState) (acc : List RGBA) : List RGBA :=
 -- def encodeChunks (pixels : List RGBA) : List QOIChunk :=
